@@ -1,0 +1,13 @@
+# The unredacted CV must never be committed — it contains a personal phone number.
+# The publish-safe version lives at assets/cv.pdf (phone redacted, links repaired).
+Cv_Kyriazis_2.pdf
+Cv_Kyriazis.pdf
+Kyriazis_Anastasios_CV.pdf
+C2*.odt
+C2*.pdf
+
+# OS / editor noise
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/

@@ -1,0 +1,46 @@
+# Generates the animated "snake eating the contribution graph" SVGs used in README.md.
+#
+# SETUP (one time):
+#   1. This repo must be named exactly `Ankyriazis` for the README to appear on your profile.
+#   2. Settings → Actions → General → Workflow permissions → "Read and write permissions".
+#   3. Actions tab → "Generate snake animation" → "Run workflow" to produce the first render.
+#
+# Output is published to the `output` branch, which README.md reads via raw.githubusercontent.com.
+
+name: Generate snake animation
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # daily refresh
+  workflow_dispatch: # manual trigger from the Actions tab
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: snake-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Render contribution snake
+        uses: Platane/snk@v3
+        id: snake
+        with:
+          github_user_name: ${{ github.repository_owner }}
+          outputs: |
+            dist/snake.svg?palette=github-light
+            dist/snake-dark.svg?palette=github-dark
+
+      - name: Publish to the output branch
+        uses: crazy-max/ghaction-github-pages@v4
+        with:
+          target_branch: output
+          build_dir: dist
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
