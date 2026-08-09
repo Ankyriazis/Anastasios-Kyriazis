@@ -25,91 +25,101 @@ building the proof of concept that removes the risk from it.
 | Area | |
 |---|---|
 | **Languages** | Java · Python · C++ · JavaScript · SQL |
+| **Services and APIs** | FastAPI · REST · Postman · Newman CLI · REST Assured |
+| **Deployment** | Docker · Docker Compose · CUDA · ONNX Runtime |
+| **Vision and ML** | OpenCV 5 · PyTorch · YOLO26 · NumPy |
 | **Web and mobile** | React · HTML · CSS · Flutter |
-| **APIs and testing** | Postman · Newman CLI · REST Assured |
-| **Data and vision** | OpenCV · NumPy |
 | **Platforms and practice** | Linux/Unix · Git · Agile · CI/CD |
 
 ---
 
 ## Selected work
 
-### Sudoku recognition pipeline
+Two vision services built on the same hardware, deliberately shaped differently. Putting them
+side by side is the clearest thing I can show about how I design: the workload dictates the
+contract, and getting that wrong is not something a better implementation recovers from.
 
-Reading a puzzle from a photograph rather than a clean scan. The difficulty is not the solve —
-backtracking handles that in milliseconds — but everything upstream of it: perspective distortion,
-uneven lighting, and character recognition that has to be right 81 times in a row for the solve to
-mean anything.
+### Object detection service — synchronous
 
-The pipeline keeps each stage cheap and deterministic, so that when recognition fails it is obvious
-*where* it failed.
+YOLO26 behind a FastAPI endpoint, with OpenCV 5 for decode and annotation. Measured **8.10 ms
+at p50** and 99 images/second on an RTX 4060, which comfortably fits a request/response shape.
+
+The interesting work is around the model rather than in it: weights loaded once at startup with
+warmup inferences, so the first caller does not absorb CUDA initialisation; uploads decoded in
+memory rather than through a temp file; an ONNX export path that verifies its own output by
+loading the graph back and running it, because Ultralytics reports success as soon as a file
+exists. 22 tests, none needing a GPU.
+
+Python · FastAPI · YOLO26 · OpenCV 5 · ONNX · Docker —
+[repository](https://github.com/Ankyriazis/yolo26-inference-service)
+
+### 3D reconstruction from unposed images — asynchronous
+
+VGGT recovers camera poses, depth and a point cloud from several photographs with no calibration
+step. A reconstruction takes tens of seconds, so the synchronous shape is simply unavailable: the
+API accepts work with `202` and a job id, and the client polls.
+
+The measurement that mattered was memory, not latency. On an 8 GB card the working set for two
+views is 6.95 GB while the desktop leaves 6.94 GB free — **over budget by ten megabytes**. CUDA
+does not fail there; it pages to host memory and continues, so the same job ran in 1.35 s when it
+fitted and 71 s when it did not, with nothing logged in between. The service now records its VRAM
+budget at startup and reports the shortfall on `/readyz`, which turns a fiftyfold mystery into a
+line an operator can act on.
+
+Python · FastAPI · VGGT · PyTorch · CUDA · Docker —
+[repository](https://github.com/Ankyriazis/vggt-reconstruction-service)
 
 ```mermaid
-flowchart LR
-    IMG["Photograph"] --> PRE["Preprocessing<br/>grayscale · blur · adaptive threshold"]
-    PRE --> GRID["Grid detection<br/>contours · perspective warp"]
-    GRID --> CELL["Cell segmentation<br/>81 tiles"]
-    CELL --> OCR["Character recognition<br/>Tesseract"]
-    OCR --> MAT["9 × 9 matrix"]
-    MAT --> SOLVE["Backtracking solver"]
-    SOLVE --> OUT["Solution"]
+flowchart TB
+    subgraph S["Detection · milliseconds · synchronous"]
+        C1["Client"] -->|"POST /detect"| D["YOLO26<br/>8.10 ms p50"]
+        D -->|"200 · detections"| C1
+    end
+    subgraph A["Reconstruction · tens of seconds · asynchronous"]
+        C2["Client"] -->|"POST /reconstruct"| Q["Job queue"]
+        Q -->|"202 · job id"| C2
+        Q --> W["VGGT worker<br/>one GPU, one job"]
+        W --> R["Artifacts<br/>poses · depth · point cloud"]
+        C2 -.->|"GET /jobs/:id"| R
+    end
 
     classDef io fill:#0f172a,stroke:#020617,stroke-width:1px,color:#f8fafc;
     classDef stage fill:#334155,stroke:#1e293b,stroke-width:1px,color:#f8fafc;
     classDef key fill:#1d4ed8,stroke:#1e3a8a,stroke-width:1px,color:#f8fafc;
-    class IMG,OUT io;
-    class PRE,GRID,CELL,MAT stage;
-    class OCR,SOLVE key;
+    class C1,C2 io;
+    class Q,R stage;
+    class D,W key;
 ```
 
-Python · OpenCV · NumPy · Tesseract — [repository](https://github.com/Ankyriazis/ai_sudoku_solver)
+Both also forced a licensing decision rather than a default one: the detector is AGPL-3.0 because
+Ultralytics is, and the reconstruction service is MIT over weights that are CC BY-NC, which it
+depends on rather than redistributes. Knowing which checkpoint you are allowed to ship is part of
+the design, not paperwork after it.
 
-### API contract testing framework
+### Earlier work
 
-Manual API checks do not survive a release cadence. The design goal was coverage that is executable,
-repeatable, and runnable by someone who did not write it — which is the difference between a test
-that proves something to me and a test that proves something to a customer.
+**[Sudoku recognition pipeline](https://github.com/Ankyriazis/ai_sudoku_solver)** — reading a
+puzzle from a photograph, where the solve is trivial and everything upstream is not: perspective
+correction, cell segmentation, and character recognition that has to be right 81 times in a row.
+Reads the sample image with zero errors across 81 cells. *Python · OpenCV · Tesseract*
 
-Two layers, deliberately: Postman collections that are readable and shareable, and REST Assured for
-the chained scenarios that need real program logic.
+**[API contract testing framework](https://github.com/Ankyriazis/API-Testing-Framework)** —
+coverage that is executable, repeatable and runnable by someone who did not write it, which is the
+difference between proving something to myself and proving it to a customer. *Postman · Newman ·
+REST Assured*
 
-```mermaid
-flowchart LR
-    SPEC["API contract"] --> PM["Postman collections"]
-    SPEC --> RA["REST Assured<br/>chained scenarios"]
-    PM --> NEW["Newman CLI<br/>headless run"]
-    NEW --> REP["Consolidated report"]
-    RA --> REP
-    REP --> GATE{"Quality gate"}
-    GATE -->|pass| SHIP["Release"]
-    GATE -->|fail| SPEC
-
-    classDef io fill:#0f172a,stroke:#020617,stroke-width:1px,color:#f8fafc;
-    classDef stage fill:#334155,stroke:#1e293b,stroke-width:1px,color:#f8fafc;
-    classDef key fill:#1d4ed8,stroke:#1e3a8a,stroke-width:1px,color:#f8fafc;
-    class SPEC,SHIP io;
-    class PM,RA,NEW stage;
-    class REP,GATE key;
-```
-
-Postman · Newman · REST Assured · Java — [repository](https://github.com/Ankyriazis/API-Testing-Framework)
-
-### Algorithm visualiser
-
-Sorting and pathfinding algorithms are difficult to teach because their execution is invisible. The
-tool gives step-granular playback rather than an animation you can only watch — control belongs to
-the person trying to understand it, which is the same principle that separates a useful technical
-demo from a performance.
-
-Java · JavaFX · Swing — [repository](https://github.com/Ankyriazis/algorithm-visualization-tool)
+**[Algorithm visualiser](https://github.com/Ankyriazis/algorithm-visualization-tool)** —
+step-granular playback rather than an animation you can only watch, because control belongs to the
+person trying to understand it. *Java · JavaFX*
 
 ---
 
 ## Currently
 
-Working toward the AWS Solutions Architect Associate certification, and building depth in
-containerisation and distributed system design — the areas that separate designing a component from
-designing a system.
+Working toward the AWS Solutions Architect Associate certification. The two services above are
+where I have been building the rest of it: containerisation, GPU deployment, and the habit of
+measuring a system on the hardware it will actually run on rather than trusting the number that
+flattered it first.
 
 ## Contact
 
